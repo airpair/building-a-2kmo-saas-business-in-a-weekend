@@ -58,13 +58,94 @@ I then worked my way through setting up a system where when we receive an API hi
 
 With Twilio this part took about a day.
 
-I had to learn about purchasing phone numbers, cycling through them to make sure we don't hit daily rate limits per long code (5 digit short codes are $3k/3 months), and making sure I had all the right callbacks setup so I could determine the status of a message and react appropriately.
+The first step to setting up a system like this is purchasing a few phone numbers from Twilio that you can send a message from.
 
-One lesson we learned here (and cost us a few hundred $$) was that Twilio on an SMS callback isn't guaranteed to send you the cost of that message. At first we assumed they did and passed on the returned value to the customer to pay for their SMS. Turns out in small volumes yes you always see the price, but at larger volumes Twilio may say the SMS is sent, but you have to send in another API call later to get the price. We found this after a couple weeks and losing some money.
+One of the errors that can arise is if a phone number sends over a couple hundred texts in a day that are all similar the carrier (AT&T, Verizon, etc.) will think it's spam. Therefore you have to cycle through the phone numbers to make sure we don't hit daily rate limits per long code.
+
+    var client = require('twilio')(accountSid, authToken); 
+    
+    client.incomingPhoneNumbers.list(function(err, data) {
+        console.log('number of numbers: ' + data.incoming_phone_numbers.length);
+        if (!err) {
+            if(data.incomingPhoneNumbers.length === 0) {
+                console.log('No Phone Number Available To Send');
+                return res.status(400).json({
+                    error: 'No Phone Number Available To Send'
+                });
+            }
+            var randomNumberLocation = Math.floor(Math.random() * data.incomingPhoneNumbers.length)
+            var fromNumber = data.incomingPhoneNumbers[randomNumberLocation].phoneNumber;
+            
+            ...
+        }
+    }
+          
+          
+You can avoid all of the above by using a 5 digit short codes, but those are $3k/3 months.
+
+Then there's the rest of the validation and actually sending the message. There's a simple regex that can take a phone number in any format that already has the country code it and prepare it for Twilio.
+
+    var sendNumber = '+' + req.body.number.replace(/[^\/\d]/g,'');
+
+Next you need to make sure the callback is setup so I could determine the status of a message and react appropriately. We attached the User ID to attribute who to charge the SMS to, we also store the SMS ID against that user and their link so we can reference it later.
+
+    var statusCallback = req.protocol + '://' + req.get('host') + '/message-status/'+doc.user.id;
+          
+Lastly you actually send the SMS
+
+    client.messages.create({ 
+            to: sendNumber, 
+            from: fromNumber,
+            body: textBody,  
+            StatusCallback: statusCallback 
+        }, function(err, message) { 
+            if (!err) {
+                console.log('Success! SMS ID: ' + message);
+            }
+        }
+    }
+
+Lastly you setup the callback to receive the status of the SMS. Using node/express we setup the User to be identified on the way to the Twilio callback.
+
+    
+    app.route('/message-status/:userId').post(links.messageStatus);
+    app.param('userId', links.user);
+    
+    links.user = function(req, res, next, id) {
+        User.findOne({
+            _id: id
+        }, function(err, user) {
+            if (err) return next(err);
+            if (!user) return next(new Error('Failed to load user ' + id));
+            req.user = user;
+            next();
+        });
+    };
+    
+    exports.messageStatus = function(req, res) {
+        var smsSID = req.body.SmsSid;
+        var smsStatus = req.body.SmsStatus;
+        
+        if(smsStatus === 'sent') {
+            var client = require('twilio')(accountSid, authToken); 
+
+            client.messages(smsSID).get(function(err, message) { 
+                if(!err) {
+                    console.log('Found SMS! Price: ' + message.price);
+                }
+            }
+        }
+    }
+    
+And with that you have the basic setup ready!
+
+One lesson we learned here (and cost us a few hundred $$) was that Twilio on an SMS callback that says "sent" or "delivered" it isn't guaranteed to have the cost of that message available. 
+
+At first we assumed they did and passed on the returned value to the customer to pay for their SMS. Turns out in small volumes yes you always see the price, but at larger volumes Twilio may say the SMS is sent, but you have to send in another API call later to get the price. We found this after a couple weeks and losing some money.
 
 After all of this we had the Twilio API setup and running and returning the saved SMS back to the phone number.
 
-### 4) Building the drop in widget
+### 3) Building the drop in widget
 
 This was (and still is) the trickiest part of the entire process.
 
@@ -84,7 +165,7 @@ While writing the widget was super easy, we ran into a ton of issues once custom
 
 With the basic product working it was time to start making sure customers could pay us :)
 
-### 3) Installing Stripe
+### 4) Installing Stripe
 
 This was super easy, dropped in the stripe SDK, followed the documentation on their website, and had a payments modal up and running in a couple hours.
 
@@ -119,13 +200,13 @@ I used this pretty credit card form [here](https://github.com/jessepollak/card) 
 
 And we were ready to launch!
 
-### 4) Launching!
+### 5) Launching!
 
 Day one we launched and had 3 of our friends apps as paying customers. We were a $10/mo. unlimited plan at the time. 
 
 We then were posted to Product Hunt by a beta tester of ours and it was off to the races!
 
-### 5) Improvements since
+### 6) Improvements since
 
 Since we built it over that weekend we've done minor upgrades to the platform. 
 
